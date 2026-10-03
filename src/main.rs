@@ -11,11 +11,14 @@ use std::io::{BufReader, stdout};
 use std::path::{Path, PathBuf};
 use std::{collections::btree_map::Entry, fs::File};
 
+mod contract;
 mod diagnostics;
 mod dirgraph;
 mod dirgraphsvg;
 mod file_utils;
 mod gsn;
+mod machine;
+mod output_guard;
 mod outputs;
 mod render;
 
@@ -30,8 +33,20 @@ const MODULE_INFORMATION_NODE: &str = "module";
 ///
 ///
 fn main() -> Result<()> {
+    let matches = build_command_options().get_matches();
+    if matches.contains_id("CONTRACT") || matches.contains_id("DIAGNOSTICS") {
+        let success = machine::run(&matches);
+        if !success {
+            std::process::exit(1);
+        }
+        Ok(())
+    } else {
+        legacy_main(matches)
+    }
+}
+
+fn legacy_main(matches: clap::ArgMatches) -> Result<()> {
     let mut command = build_command_options();
-    let matches = command.clone().get_matches();
 
     let mut diags = Diagnostics::default();
 
@@ -172,6 +187,24 @@ impl Error for ValidationOrCheckError {}
 ///
 fn build_command_options() -> Command {
     clap::command!()
+        .arg(
+            Arg::new("CONTRACT")
+                .long("contract")
+                .value_parser(["draft", "complete"])
+                .help("Check the opt-in GSN v3 contract profile."),
+        )
+        .arg(
+            Arg::new("DIAGNOSTICS")
+                .long("diagnostics")
+                .value_parser(["json"])
+                .help("Write one versioned JSON diagnostic document to stderr."),
+        )
+        .arg(
+            Arg::new("INDEX_JSON")
+                .long("index-json")
+                .requires("CONTRACT")
+                .help("Write a derived JSON node index to this file (complete profile only)."),
+        )
         .arg(
             Arg::new("INPUT")
                 .help("Sets the input file(s) to use.")
@@ -436,8 +469,17 @@ fn read_inputs(
     'outer: loop {
         let mut additional_inputs = vec![];
         for input in &copied_inputs {
-            let reader =
-                BufReader::new(File::open(input).context(format!("Failed to open file {input}"))?);
+            let reader = BufReader::new(File::open(input).map_err(|e| {
+                diags.error(
+                    "I01",
+                    Some(input),
+                    None,
+                    None,
+                    None,
+                    format!("Failed to open file {input}: {e}"),
+                );
+                anyhow!("Failed to open file {input}: {e}")
+            })?);
 
             let options = serde_saphyr::options! {
                 duplicate_keys: DuplicateKeyPolicy::Error,
@@ -445,11 +487,31 @@ fn read_inputs(
             };
 
             let mut n: BTreeMap<String, GsnDocument> =
-                serde_saphyr::from_reader_with_options(reader, options)
-                    .context(format!("Failed to parse YAML from file {input}"))?;
+                serde_saphyr::from_reader_with_options(reader, options).map_err(|e| {
+                    diags.error(
+                        "I02",
+                        Some(input),
+                        None,
+                        None,
+                        None,
+                        format!("Failed to parse YAML from file {input}: {e}"),
+                    );
+                    anyhow!("Failed to parse YAML from file {input}: {e}")
+                })?;
             let meta: ModuleInformation = match n.remove_entry(MODULE_INFORMATION_NODE) {
                 Some((_, GsnDocument::ModuleInformation(x))) => x,
-                _ => {
+                Some((_, GsnDocument::GsnNode(_))) => {
+                    diags.error(
+                        "I03",
+                        Some(input),
+                        None,
+                        Some("module"),
+                        Some("module"),
+                        "The module entry must contain module information, not a GSN node.".into(),
+                    );
+                    return Err(ValidationOrCheckError {}.into());
+                }
+                None => {
                     let module_name = escape_text(&input.to_owned());
                     ModuleInformation::new(module_name)
                 }
@@ -482,11 +544,23 @@ fn read_inputs(
                     additional_inputs.extend(imported_files.to_vec());
                 }
                 Entry::Vacant(_) => {
-                    unreachable!()
+                    diags.error(
+                        "C06",
+                        Some(input),
+                        Some(&module),
+                        None,
+                        Some("module"),
+                        "This input file is already loaded under another module name.".into(),
+                    );
+                    break 'outer Err(ValidationOrCheckError {}.into());
                 }
                 Entry::Occupied(e) => {
-                    diags.add_error(
+                    diags.error(
+                        "C06",
+                        Some(input),
                         Some(&module),
+                        None,
+                        Some("module.name"),
                         format!(
                             "C06: Module in {} was already present in {} provided by {}.",
                             input,
@@ -572,11 +646,24 @@ fn check_and_add_nodes(
                         }
                         e.insert(x);
                     }
-                    _ => unreachable!(), // There can be only one MetaNode
+                    GsnDocument::ModuleInformation(_) => {
+                        diags.error(
+                            "I03",
+                            Some(input),
+                            Some(module),
+                            Some(&k),
+                            None,
+                            "Module information is only allowed under the module key.".into(),
+                        );
+                    }
                 },
                 Entry::Occupied(e) => {
-                    diags.add_error(
+                    diags.error(
+                        "C07",
+                        Some(input),
                         Some(module),
+                        Some(&k),
+                        None,
                         format!(
                             "C07: Element {} in {} was already present in {}.",
                             k,

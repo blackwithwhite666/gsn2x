@@ -36,3 +36,4 @@
 - [Design Goals](./design_goals.md)
 - [History](./history.md)
 - [Migration between Different Versions](./migration.md)
+- [GSN contract profile](contract.md)

@@ -48,8 +48,12 @@ fn check_root_nodes(
         1 => {
             let rootn = root_nodes.first().unwrap(); // unwrap is ok, since we just checked that there is an element in Vec
             if nodes.get(rootn).unwrap().node_type != Some(GsnNodeType::Goal) {
-                diag.add_error(
+                diag.error(
+                    "C02",
                     None,
+                    None,
+                    Some(rootn),
+                    Some("nodeType"),
                     format!("C02: The root element should be a goal, but {rootn} was found."),
                 );
                 Err(())
@@ -84,7 +88,8 @@ fn check_node_references(
         .iter()
         .filter(|(_, n)| !excluded_modules.contains(&n.module.as_str()))
         .flat_map(|(id, node)| {
-            [
+            let start = diag.messages.len();
+            let results = [
                 check_unresolved_references(
                     diag,
                     nodes,
@@ -102,7 +107,16 @@ fn check_node_references(
                     "supported by",
                 ),
                 check_challenges(diag, nodes, &node.challenges, id, &node.module),
-            ]
+            ];
+            for d in &mut diag.messages[start..] {
+                if d.node.is_none() {
+                    d.node = Some(id.clone());
+                }
+                if d.field.is_none() {
+                    d.field = Some("challenges".into());
+                }
+            }
+            results
         })
         .collect::<Result<(), ()>>()
 }
@@ -123,8 +137,8 @@ fn check_unresolved_references(
         .iter()
         .filter(|&n| !nodes.contains_key(n))
         .try_for_each(|wref| {
-            diag.add_error(
-                Some(module),
+            diag.error(
+                "C03", None, Some(module), Some(id), Some(if error_str == "in context of" { "inContextOf" } else { "supportedBy" }),
                 format!("C03: Element {id} has unresolved \"{error_str}\" element: {wref}"),
             );
             if wref.contains(',') {
@@ -134,6 +148,9 @@ fn check_unresolved_references(
                         "C11: Unresolved \"{error_str}\" element of {id} may be actually a list: {wref}. Try writing [{wref}] instead."
                     ),
                 );
+                let warning = diag.messages.last_mut().unwrap();
+                warning.node = Some(id.to_owned());
+                warning.field = Some(if error_str == "in context of" { "inContextOf" } else { "supportedBy" }.to_owned());
             }
             Err(())
         })
@@ -150,8 +167,12 @@ fn check_cycles<'a>(
 ) -> Result<(), ()> {
     let cycle = graph.get_first_cycle();
     if let Some((found, ring)) = cycle {
-        diag.add_error(
+        diag.error(
+            "C04",
             None,
+            None,
+            Some(found),
+            Some("supportedBy"),
             format!(
                 "C04: Cycle detected at element {}. Cycle is {}.",
                 found,

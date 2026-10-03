@@ -1,14 +1,23 @@
+use serde::Serialize;
 use std::fmt::Display;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum DiagType {
     Warning,
     Error,
 }
 
+#[derive(Serialize)]
 pub struct DiagMsg {
+    pub code: String,
+    pub input: Option<String>,
+    pub node: Option<String>,
+    pub field: Option<String>,
+    #[serde(rename = "severity")]
     pub diag_type: DiagType,
     pub module: Option<String>,
+    #[serde(rename = "message")]
     pub msg: String,
 }
 
@@ -35,6 +44,22 @@ pub struct Diagnostics {
 }
 
 impl Diagnostics {
+    pub fn error(
+        &mut self,
+        code: &str,
+        input: Option<&str>,
+        module: Option<&str>,
+        node: Option<&str>,
+        field: Option<&str>,
+        message: String,
+    ) {
+        self.add_error(module, message);
+        let d = self.messages.last_mut().unwrap();
+        d.code = code.to_owned();
+        d.input = input.map(str::to_owned);
+        d.node = node.map(str::to_owned);
+        d.field = field.map(str::to_owned);
+    }
     pub fn add_error(&mut self, module: Option<&str>, msg: String) {
         self.add_msg(DiagType::Error, module, msg);
     }
@@ -49,6 +74,17 @@ impl Diagnostics {
             DiagType::Warning => self.warnings += 1,
         }
         let d = DiagMsg {
+            code: msg
+                .split_once(':')
+                .map(|(code, _)| code)
+                .filter(|code| {
+                    code.len() == 3 && code.as_bytes()[1..].iter().all(u8::is_ascii_digit)
+                })
+                .unwrap_or("GSN_CHECK")
+                .to_owned(),
+            input: None,
+            node: None,
+            field: None,
             diag_type: dtype,
             module: module.map(|m| m.to_owned()),
             msg,

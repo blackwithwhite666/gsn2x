@@ -18,7 +18,8 @@ pub fn validate_module(
         .iter()
         .filter(|(_, n)| n.module == module_name)
         .flat_map(|(id, node)| {
-            [
+            let start = diag.messages.len();
+            let results = [
                 // Validate that type of node is known
                 validate_type(diag, module_name, id, node),
                 // Validate if id and type do not contradict
@@ -29,7 +30,24 @@ pub fn validate_module(
                 validate_assurance_claim_point(diag, module_name, nodes, id, node),
                 // Validate if defeated is correctly set
                 validate_defeated(diag, module_name, nodes, id, node),
-            ]
+            ];
+            for d in &mut diag.messages[start..] {
+                d.node = Some(id.clone());
+                if d.field.is_some() {
+                    continue;
+                }
+                d.field = match d.code.as_str() {
+                    "V01" | "V08" => Some("nodeType"),
+                    "V02" | "V03" => Some("supportedBy"),
+                    "V09" => Some("acp"),
+                    "V12" => Some("challenges"),
+                    "V10" => Some("defeated"),
+                    "V13" => Some("defeatedRelation"),
+                    _ => None,
+                }
+                .map(str::to_owned);
+            }
+            results
         })
         .collect::<Vec<Result<(), ()>>>();
     all_results
@@ -215,7 +233,8 @@ fn validate_reference(
     let valid_references = refs
         .iter()
         .flat_map(|n| {
-            [
+            let start = diag.messages.len();
+            let results = [
                 if n == node {
                     diag.add_error(
                         Some(module),
@@ -245,7 +264,19 @@ fn validate_reference(
                         Ok(()) // Ok is correct, since not all references must exist yet. Checked by C03.
                     }
                 },
-            ]
+            ];
+            for d in &mut diag.messages[start..] {
+                d.node = Some(node.to_owned());
+                d.field = Some(
+                    if diag_str == "context" {
+                        "inContextOf"
+                    } else {
+                        "supportedBy"
+                    }
+                    .to_owned(),
+                );
+            }
+            results
         })
         .collect::<Vec<_>>();
     valid_references
@@ -310,8 +341,8 @@ fn validate_module_extensions(
                     || local_id.starts_with('S')
                     || local_id.starts_with('G'))
                 {
-                    diag.add_error(
-                            Some(module_name),
+                    diag.error(
+                            "V07", None, Some(module_name), Some(local_id), Some("module.extends"),
                             format!(
                                 "V07: Element {local_id} is of wrong type. Only Strategies, Goals and Solutions can develop other Goals and Strategies."
                             ),
@@ -322,8 +353,8 @@ fn validate_module_extensions(
                     .filter(|(_, n)| n.module == module_name)
                     .any(|(id, _)| id == local_id)
                 {
-                    diag.add_error(
-                            Some(module_name),
+                    diag.error(
+                            "V07", None, Some(module_name), Some(local_id), Some("module.extends"),
                             format!(
                                 "V07: Element {} in module {} supposed to develop {} in module {} does not exist.",
                                 local_id,

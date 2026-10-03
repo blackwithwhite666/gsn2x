@@ -304,6 +304,7 @@ dependencies = [
  "assert_fs",
  "clap",
  "predicates",
+ "same-file",
  "serde",
  "serde-saphyr",
  "serde_json",

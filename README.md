@@ -39,3 +39,10 @@ If you use Visual Studio Code, you can use my extension [gsn2x Preview](https://
 
 It even downloads the latest version for you.
 
+
+## GSN contracts
+
+The opt-in [contract profile](doc/src/contract.md) adds draft/complete checks, typed
+local metadata, JSON diagnostics, and a derived node index. The portable
+[gsn-contract skill](skills/gsn-contract/SKILL.md) provides generate, update, and
+independent review modes. Ordinary upstream usage remains available.

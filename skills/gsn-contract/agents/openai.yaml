@@ -1,0 +1,4 @@
+interface:
+  display_name: "GSN Contract"
+  short_description: "Generate, update, and review GSN contracts"
+  default_prompt: "Use $gsn-contract to generate, update, or review a GSN contract from its authoritative Markdown."

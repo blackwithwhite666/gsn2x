@@ -539,8 +539,12 @@ pub fn extend_modules(
     for (module_name, module_info) in modules {
         for ext in &module_info.meta.extends {
             if !modules.contains_key(&ext.module) {
-                diags.add_error(
+                diags.error(
+                    "C09",
+                    None,
                     Some(module_name),
+                    None,
+                    Some("module.extends"),
                     format!(
                         "C09: Module {} is not found, but is supposed to be extended by module {}.",
                         ext.module, module_name
@@ -551,14 +555,14 @@ pub fn extend_modules(
             for (foreign_id, local_ids) in &ext.develops {
                 if let Some(foreign_node) = nodes.get_mut(foreign_id) {
                     if foreign_node.module != ext.module {
-                        diags.add_error(
-                                    Some(module_name),
+                        diags.error(
+                                    "C10", None, Some(module_name), Some(foreign_id), Some("module.extends"),
                                     format!("C10: Element {} does not exist in module {}, but is supposed to be extended by {}.", foreign_id, ext.module, local_ids.join(",")),
                                 );
                         errors += 1;
                     } else if !foreign_node.undeveloped {
-                        diags.add_error(
-                                    Some(module_name),
+                        diags.error(
+                                    "C10", None, Some(module_name), Some(foreign_id), Some("module.extends"),
                                     format!("C10: Element {} is not undeveloped, but is supposed to be extended by {}.", foreign_id, local_ids.join(",")),
                                 );
                         errors += 1;
@@ -567,8 +571,12 @@ pub fn extend_modules(
                         foreign_node.undeveloped = false;
                     }
                 } else {
-                    diags.add_error(
+                    diags.error(
+                        "C10",
+                        None,
                         Some(module_name),
+                        Some(foreign_id),
+                        Some("module.extends"),
                         format!(
                             "C10: Element {} does not exist, but is supposed to be extended by {}.",
                             foreign_id,
