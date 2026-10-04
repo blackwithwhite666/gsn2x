@@ -258,14 +258,53 @@ pub fn index(
     nodes: &BTreeMap<String, GsnNode>,
     modules: &BTreeMap<String, Module>,
     metadata: &BTreeMap<String, Metadata>,
+    profile: &str,
 ) -> serde_json::Value {
-    serde_json::json!({"version": 1, "nodes": nodes.iter().map(|(id, n)| {
+    serde_json::json!({"version": 2, "profile": {
+        "name": "gsn-contract", "version": 1, "mode": profile
+    }, "nodes": nodes.iter().map(|(id, n)| {
         let mut support = n.supported_by.clone(); support.sort();
         let mut context = n.in_context_of.clone(); context.sort();
+        let attributes = index_attributes(n);
         serde_json::json!({"id": id, "type": n.node_type, "module": n.module,
             "input": modules[&n.module].canonical_path,
-            "supportedBy": support, "inContextOf": context, "metadata": metadata.get(id)})
+            "text": n.text, "undeveloped": n.undeveloped,
+            "supportedBy": support, "inContextOf": context,
+            "attributes": attributes,
+            "additionalAttributes": n.additional,
+            "metadata": metadata.get(id)})
     }).collect::<Vec<_>>()})
+}
+
+// Use the model's actual serialization for both generation and recognition.
+fn index_attributes(node: &GsnNode) -> serde_json::Value {
+    let mut attributes = serde_json::to_value(node).expect("GSN nodes are serializable");
+    if let Some(object) = attributes.as_object_mut() {
+        for field in [
+            "text",
+            "inContextOf",
+            "supportedBy",
+            "undeveloped",
+            "nodeType",
+        ] {
+            object.remove(field);
+        }
+        for field in node.additional.keys() {
+            object.remove(field);
+        }
+    }
+    attributes
+}
+
+fn is_index_attributes(attributes: &serde_json::Value) -> bool {
+    attributes.is_object()
+        && serde_json::from_value::<GsnNode>(attributes.clone()).is_ok_and(|node| {
+            // The authored model accepts unknown fields as opaque additional
+            // storage. Those do not belong in the typed index attributes.
+            // Round-trip equality also rejects coercions and graph fields that
+            // cannot be emitted here, without duplicating the model's types.
+            node.additional.is_empty() && index_attributes(&node) == *attributes
+        })
 }
 
 /// Complete file discovery is required before any contract output mutation.
@@ -309,7 +348,15 @@ pub fn reference_paths(
 #[serde(deny_unknown_fields)]
 struct PriorIndex {
     version: u32,
+    profile: PriorIndexProfile,
     nodes: Vec<PriorIndexNode>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PriorIndexProfile {
+    name: String,
+    version: u32,
+    mode: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -320,9 +367,14 @@ struct PriorIndexNode {
     module: String,
     input: std::path::PathBuf,
     #[serde(rename = "supportedBy")]
-    _support: Vec<String>,
+    support: Vec<String>,
     #[serde(rename = "inContextOf")]
     _context: Vec<String>,
+    text: String,
+    undeveloped: bool,
+    attributes: serde_json::Value,
+    #[serde(rename = "additionalAttributes")]
+    additional_attributes: BTreeMap<String, String>,
     // Unlike optional metadata on an authored node, this index field is required.
     metadata: serde_json::Value,
 }
@@ -335,10 +387,14 @@ pub fn is_prior_index(path: &Path, modules: &BTreeMap<String, Module>) -> bool {
         return false;
     };
     let mut ids = std::collections::BTreeSet::new();
-    index.version == 1
+    index.version == 2
+        && index.profile.name == "gsn-contract"
+        && index.profile.version == 1
+        && matches!(index.profile.mode.as_str(), "draft" | "complete")
         && !index.nodes.is_empty()
         && index.nodes.iter().all(|n| {
             !n.id.trim().is_empty()
+                && !n.text.trim().is_empty()
                 && ids.insert(&n.id)
                 && !n.module.trim().is_empty()
                 && matches!(
@@ -350,6 +406,10 @@ pub fn is_prior_index(path: &Path, modules: &BTreeMap<String, Module>) -> bool {
                         | GsnNodeType::Assumption
                         | GsnNodeType::Justification
                 )
+                && (index.profile.mode == "draft"
+                    || (n.node_type != GsnNodeType::Goal && n.node_type != GsnNodeType::Strategy)
+                    || (!n.undeveloped && !n.support.is_empty()))
+                && is_index_attributes(&n.attributes)
                 && n.input.is_absolute()
                 && modules.get(&n.module).is_some_and(|m| {
                     n.input.canonicalize().ok().as_ref() == m.canonical_path.as_ref()
@@ -357,6 +417,17 @@ pub fn is_prior_index(path: &Path, modules: &BTreeMap<String, Module>) -> bool {
                 && (n.metadata.is_null()
                     || serde_json::from_value::<Metadata>(n.metadata.clone())
                         .is_ok_and(|m| m.version == 1))
+                && match (
+                    n.additional_attributes.get("gsnContract"),
+                    n.metadata.as_object(),
+                ) {
+                    (None, None) => true,
+                    (Some(raw), Some(_)) => parse_metadata(raw)
+                        .ok()
+                        .and_then(|m| serde_json::to_value(m).ok())
+                        .is_some_and(|parsed| parsed == n.metadata),
+                    _ => false,
+                }
         })
 }
 
@@ -370,4 +441,41 @@ fn parse_metadata_value(raw: &str) -> Result<serde_json::Value, String> {
     let options =
         serde_saphyr::options! { duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error };
     serde_saphyr::from_str_with_options(raw, options).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gsn::Challenge;
+
+    #[test]
+    fn typed_attribute_recognition_preserves_model_challenge_encoding() {
+        // This checks the serializer boundary, not core-profile admission:
+        // challenges need counter nodes, which the core profile rejects.
+        for (challenge, wire) in [
+            (Challenge::Node("G1".into()), "G1"),
+            (
+                Challenge::Relation(("G1".into(), "Sn1".into())),
+                "G1 -> Sn1",
+            ),
+        ] {
+            let node = GsnNode {
+                challenges: Some(challenge),
+                defeated: true,
+                ..Default::default()
+            };
+            let attributes = index_attributes(&node);
+            assert_eq!(
+                attributes,
+                serde_json::json!({"challenges": wire, "defeated": true})
+            );
+            assert!(is_index_attributes(&attributes));
+        }
+        for malformed in [
+            serde_json::json!({"challenges": ["G1", "Sn1"]}),
+            serde_json::json!({"defeated": 1}),
+        ] {
+            assert!(!is_index_attributes(&malformed));
+        }
+    }
 }

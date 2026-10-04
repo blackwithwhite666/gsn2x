@@ -309,6 +309,8 @@ fn deterministic_index_tracks_expansion_and_actual_owners() {
     assert_eq!(index["nodes"][0]["id"], "C1");
     assert_eq!(index["nodes"][1]["supportedBy"], serde_json::json!(["Sn1"]));
     assert_eq!(index["nodes"][1]["inContextOf"], serde_json::json!(["C1"]));
+    assert_eq!(index["nodes"][1]["text"], "Claim");
+    assert_eq!(index["nodes"][1]["undeveloped"], false);
     assert_eq!(index["nodes"][2]["module"], "Developer");
     assert_eq!(
         index["nodes"][2]["input"],
@@ -320,25 +322,116 @@ fn deterministic_index_tracks_expansion_and_actual_owners() {
             .unwrap()
     );
     assert_eq!(index["nodes"][2]["metadata"]["nodeRefs"][0]["type"], "Goal");
+    assert_eq!(index["version"], 2);
+    assert_eq!(
+        index["profile"],
+        serde_json::json!({"name":"gsn-contract", "version":1, "mode":"complete"})
+    );
     assert!(run(&temp, &args).status.success());
     assert_eq!(first, std::fs::read(temp.child("nodes.json")).unwrap());
-    json_failure(
-        run(
-            &temp,
-            &[
-                "--check",
-                "--contract",
-                "draft",
-                "--diagnostics",
-                "json",
-                "--index-json",
-                "nodes.json",
-                "root.yaml",
-            ],
-        ),
-        "P07",
+    let draft_args = [
+        "--check",
+        "--contract",
+        "draft",
+        "--diagnostics",
+        "json",
+        "--index-json",
+        "nodes.json",
+        "root.yaml",
+    ];
+    assert!(run(&temp, &draft_args).status.success());
+    let draft: Value =
+        serde_json::from_slice(&std::fs::read(temp.child("nodes.json")).unwrap()).unwrap();
+    assert_eq!(draft["profile"]["mode"], "draft");
+}
+
+#[test]
+fn draft_index_preserves_effective_fields_and_does_not_claim_completion() {
+    let temp = assert_fs::TempDir::new().unwrap();
+    temp.child("model.yaml").write_str("G1:\n  text: A claim still in progress.\n  undeveloped: true\n  classes: [draft-note]\n  gsnContract: {version: 1}\n").unwrap();
+    let args = [
+        "--check",
+        "--contract",
+        "draft",
+        "--diagnostics",
+        "json",
+        "--index-json",
+        "nodes.json",
+        "model.yaml",
+    ];
+    let draft_run = run(&temp, &args);
+    assert!(draft_run.status.success(), "{draft_run:?}");
+    let bytes = std::fs::read(temp.child("nodes.json")).unwrap();
+    let index: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(index["version"], 2);
+    assert_eq!(index["profile"]["mode"], "draft");
+    assert_eq!(index["nodes"][0]["text"], "A claim still in progress.");
+    assert_eq!(index["nodes"][0]["undeveloped"], true);
+    assert_eq!(
+        index["nodes"][0]["attributes"]["classes"],
+        serde_json::json!(["draft-note"])
     );
+    assert!(index["nodes"][0]["attributes"]["nodeType"].is_null());
+    assert_eq!(
+        index["nodes"][0]["additionalAttributes"]["gsnContract"],
+        "version: 1\n"
+    );
+    assert_eq!(index["nodes"][0]["metadata"]["version"], 1);
+    assert!(run(&temp, &args).status.success());
+    assert_eq!(bytes, std::fs::read(temp.child("nodes.json")).unwrap());
+
+    let original_model = std::fs::read(temp.child("model.yaml")).unwrap();
+    let unsafe_output = run(
+        &temp,
+        &[
+            "--check",
+            "--contract",
+            "draft",
+            "--diagnostics",
+            "json",
+            "--index-json",
+            "model.yaml",
+            "model.yaml",
+        ],
+    );
+    json_failure(unsafe_output, "O01");
+    assert_eq!(
+        original_model,
+        std::fs::read(temp.child("model.yaml")).unwrap()
+    );
+    assert_eq!(bytes, std::fs::read(temp.child("nodes.json")).unwrap());
+
+    let complete = run(
+        &temp,
+        &[
+            "--check",
+            "--contract",
+            "complete",
+            "--diagnostics",
+            "json",
+            "--index-json",
+            "nodes.json",
+            "model.yaml",
+        ],
+    );
+    json_failure(complete, "P05");
     assert!(!temp.child("nodes.json").path().exists());
+
+    assert!(run(&temp, &args).status.success());
+    let retained = std::fs::read(temp.child("nodes.json")).unwrap();
+    temp.child("model.yaml")
+        .write_str("G1: [invalid\n")
+        .unwrap();
+    let invalid = run(&temp, &args);
+    let diagnostics = json_failure(invalid, "I02");
+    assert!(
+        diagnostics["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"] == "O02")
+    );
+    assert_eq!(retained, std::fs::read(temp.child("nodes.json")).unwrap());
 }
 
 #[test]

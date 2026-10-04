@@ -81,28 +81,46 @@ invalid inputs/checks or an output failure; clap argument errors exit 2. Help an
 version queries exit 0. Warnings alone do not fail. Without
 new output flags, legacy text diagnostics remain available.
 
-`--index-json FILE` requires the complete profile and writes only after all checks
-pass. Contract mode checks all actual output destinations before any output mutation:
+`--index-json FILE` requires either contract profile and writes only after all checks
+for that profile pass. Draft indexes may contain unsupported and undeveloped
+Goals/Strategies, so they do not mean the graph is complete. Contract mode checks all actual output destinations before any output mutation:
 module graphs, combined views, evidence lists, statistics, YAML dumps, index staging,
 and copied stylesheets. Destinations cannot alias inputs, imports, declared local
 source/evidence/owner paths, or stylesheet sources, through normalized paths,
 symlinks, or hardlinks. Conflicting output destinations also fail.
 
 Cleanup removes an existing index only after complete input/reference discovery and
-successful output preflight, and only if it matches the version 1 derived index
-shape with canonical owners from the loaded modules. An arbitrary existing file is
-preserved and rejected. If YAML or metadata parsing prevents complete discovery,
+successful output preflight, and only if it matches the version 2 derived index
+shape, explicit `gsn-contract` profile, and canonical owners from the loaded modules. An arbitrary existing file is
+preserved and rejected. Typed `attributes` must match the model's serialized
+field names and value shapes; unknown keys belong in `additionalAttributes`. If YAML or metadata parsing prevents complete discovery,
 all existing outputs are preserved; O02 reports that a requested existing index is
 not current. A fully discovered but invalid graph can remove an identified prior
 index without writing a replacement. Consumers must require exit 0 for the current
-inputs: retained outputs after failure cannot certify those inputs. Do not use an
-input or evidence file as an output path.
+inputs: retained outputs after failure cannot certify those inputs. A version 1
+index is not recognized or removed; choose a fresh exclusive output path instead
+of deleting an earlier file without checking its ownership. Do not use an input or
+evidence file as an output path.
 
-The index is a derived document with `version: 1` and `nodes`,
-ordered by ID. Each node contains `id`, `type`, `module`, `input` (canonical owner
-path), sorted `supportedBy` and `inContextOf` relations, and parsed `metadata`
-(or null). Effective module extensions are included. The index adds no hashes or
-new identity registry. It records structure; it is not a semantic success receipt.
+The index is a derived document with `version: 2`, a `profile` object, and `nodes`,
+ordered by ID. The profile is `{name: "gsn-contract", version: 1, mode: "draft"}`
+or the same object with `mode: "complete"`; it reports which structural check
+passed. Each node contains `id`, `type`, `module`, `input` (canonical owner path),
+effective `text`, `undeveloped`, sorted `supportedBy` and `inContextOf` relations,
+typed non-graph rendering `attributes`, opaque string-valued
+`additionalAttributes`, and parsed GSN contract `metadata` (or null). Effective
+module extensions are included. The consumer uses these actual expanded nodes and
+does not repeat expansion or resolve owners from comments. The index adds no hashes
+or new identity registry. It records structure; it is not a semantic success receipt.
+
+Example draft index (the input path is canonicalized at runtime):
+
+```json
+{"version":2,"profile":{"name":"gsn-contract","version":1,"mode":"draft"},"nodes":[{"id":"G1","type":"Goal","module":"Main","input":"/absolute/model.yaml","text":"A claim still in progress.","undeveloped":true,"supportedBy":[],"inContextOf":[],"attributes":{},"additionalAttributes":{},"metadata":null}]}
+```
+
+The index cannot attest source coverage, implementation evidence, claim meaning,
+or complete contract validity. Arbitrary metadata and visual layers stay descriptive.
 Independent review must bind its verdict to the exact source, model, evidence,
 standard and vocabulary inputs it inspected.
 
@@ -116,7 +134,6 @@ standard and vocabulary inputs it inspected.
 | P04 | Invalid effective context edge |
 | P05 | Undeveloped or unsupported Goal/Strategy in complete mode |
 | P06 | Attempt to exclude contract reference checks |
-| P07 | Index requested without complete mode |
 | M01 | Malformed metadata or blank reference value |
 | M02 | Unsupported metadata version |
 | M03 | Missing referenced GSN node |

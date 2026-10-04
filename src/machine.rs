@@ -49,16 +49,6 @@ pub fn run(matches: &ArgMatches) -> bool {
                 "Contract checks cannot exclude required references or modules.".into(),
             );
         }
-        if index_path.is_some() && profile.map(String::as_str) != Some("complete") {
-            diags.error(
-                "P07",
-                None,
-                None,
-                None,
-                Some("index-json"),
-                "The node index requires the complete contract profile.".into(),
-            );
-        }
         // Never pass exclusion flags to a contract check.
         let exclusions = if profile.is_some() {
             &[][..]
@@ -135,7 +125,12 @@ pub fn run(matches: &ArgMatches) -> bool {
         if let Some(path) = index_path {
             write_index(
                 Path::new(path),
-                &contract::index(&nodes, &modules, &metadata),
+                &contract::index(
+                    &nodes,
+                    &modules,
+                    &metadata,
+                    profile.expect("--index-json requires --contract"),
+                ),
             )?;
         }
         Ok(())

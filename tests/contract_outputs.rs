@@ -118,7 +118,11 @@ fn malformed_metadata_never_removes_or_overwrites_an_undiscovered_target() {
 fn arbitrary_files_are_not_owned_prior_indexes() {
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("model.yaml").write_str(MODEL).unwrap();
-    for content in ["stale", "{\"version\":1,\"nodes\":[]}"] {
+    for content in [
+        "stale",
+        "{\"version\":1,\"nodes\":[]}",
+        "{\"version\":1,\"nodes\":[{\"id\":\"G1\",\"type\":\"Goal\",\"module\":\"Main\",\"input\":\"/tmp/model.yaml\",\"supportedBy\":[],\"inContextOf\":[],\"metadata\":null}]}",
+    ] {
         dir.child("nodes.json").write_str(content).unwrap();
         failure(
             run(
@@ -394,5 +398,141 @@ fn multimodule_graph_and_combined_view_destinations_protect_references() {
         unchanged(&dir, reference, b"Source bytes");
         assert!(!dir.child("model.svg").path().exists());
         assert!(!dir.child("evidence.md").path().exists());
+    }
+}
+
+fn refuses_prior_attributes(attributes: Value) {
+    for mode in ["draft", "complete"] {
+        for valid_model in [true, false] {
+            let dir = assert_fs::TempDir::new().unwrap();
+            dir.child("model.yaml").write_str(MODEL).unwrap();
+            let args = [
+                "--check",
+                "--contract",
+                mode,
+                "--diagnostics",
+                "json",
+                "--index-json",
+                "nodes.json",
+                "model.yaml",
+            ];
+            let invoke = || {
+                Command::new(cargo::cargo_bin!())
+                    .current_dir(&dir)
+                    .args(args)
+                    .output()
+                    .unwrap()
+            };
+            assert!(invoke().status.success());
+            let mut index: Value =
+                serde_json::from_slice(&fs::read(dir.child("nodes.json")).unwrap()).unwrap();
+            index["nodes"][0]["attributes"] = attributes.clone();
+            let prior = serde_json::to_vec_pretty(&index).unwrap();
+            fs::write(dir.child("nodes.json"), &prior).unwrap();
+            if !valid_model {
+                dir.child("model.yaml")
+                    .write_str("G1: {text: Claim, supportedBy: [C1]}\nC1: {text: Invalid support target}\n")
+                    .unwrap();
+            }
+            let model = fs::read(dir.child("model.yaml")).unwrap();
+            failure(invoke(), "O01");
+            unchanged(&dir, "nodes.json", &prior);
+            unchanged(&dir, "model.yaml", &model);
+        }
+    }
+}
+
+#[test]
+fn malformed_prior_url_is_preserved() {
+    refuses_prior_attributes(serde_json::json!({"url": 17}));
+}
+
+#[test]
+fn unknown_prior_attribute_is_preserved() {
+    refuses_prior_attributes(serde_json::json!({"private-note": {"keep": "this document"}}));
+}
+
+#[test]
+fn malformed_prior_typed_attributes_are_preserved() {
+    for attributes in [
+        serde_json::json!([]),
+        serde_json::json!({"classes": [17]}),
+        serde_json::json!({"url": null}),
+        serde_json::json!({"acp": {"inspection": [17]}}),
+        serde_json::json!({"acp": []}),
+        serde_json::json!({"rankIncrement": -1}),
+        serde_json::json!({"rankIncrement": "2"}),
+        serde_json::json!({"horizontalIndex": {"relative": "-2"}}),
+        serde_json::json!({"horizontalIndex": {"absolute": {"private-note": true}}}),
+        serde_json::json!({"horizontalIndex": {"relative": 2, "private-note": true}}),
+        serde_json::json!({"charWrap": -1}),
+        serde_json::json!({"charWrap": 4294967296_u64}),
+        serde_json::json!({"challenges": {"Node": "G1"}}),
+        serde_json::json!({"defeated": "true"}),
+        serde_json::json!({"defeatedRelation": [17]}),
+        serde_json::json!({"text": "hidden duplicate text"}),
+        serde_json::json!({"supportedBy": ["Sn1"]}),
+    ] {
+        refuses_prior_attributes(attributes);
+    }
+}
+
+#[test]
+fn generated_typed_attributes_and_opaque_storage_remain_repeatable() {
+    for (horizontal, expected) in [
+        ("{relative: -2}", serde_json::json!({"relative": -2})),
+        ("{relative: 0}", serde_json::json!({"relative": 0})),
+        ("{absolute: 0}", serde_json::json!({"absolute": 0})),
+        ("{absolute: last}", serde_json::json!({"absolute": "last"})),
+    ] {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let model = format!(
+            "module: {{name: Main, charWrap: 64}}\nG1:\n  text: Claim\n  supportedBy: [Sn1]\n  classes: [reviewed, custom]\n  rankIncrement: 2\n  horizontalIndex: {horizontal}\n  acp: {{inspection: [G1, Sn1]}}\n  defeatedRelation: [Sn1]\n  private-note: {{keep: this document}}\n  gsnContract: {{version: 1}}\nSn1: {{text: Evidence, url: proof.md, charWrap: 80}}\n"
+        );
+        dir.child("model.yaml").write_str(&model).unwrap();
+        for mode in ["draft", "complete"] {
+            let args = [
+                "--check",
+                "--contract",
+                mode,
+                "--diagnostics",
+                "json",
+                "--index-json",
+                "nodes.json",
+                "model.yaml",
+            ];
+            let invoke = || {
+                Command::new(cargo::cargo_bin!())
+                    .current_dir(&dir)
+                    .args(args)
+                    .output()
+                    .unwrap()
+            };
+            let result = invoke();
+            assert!(result.status.success(), "{result:?}");
+            let first = fs::read(dir.child("nodes.json")).unwrap();
+            let index: Value = serde_json::from_slice(&first).unwrap();
+            assert_eq!(
+                index["nodes"][0]["attributes"],
+                serde_json::json!({
+                    "classes": ["reviewed", "custom"], "rankIncrement": 2,
+                    "horizontalIndex": expected, "acp": {"inspection": ["G1", "Sn1"]},
+                    "defeatedRelation": ["Sn1"], "charWrap": 64
+                })
+            );
+            assert_eq!(
+                index["nodes"][1]["attributes"],
+                serde_json::json!({"url": "proof.md", "charWrap": 80})
+            );
+            assert_eq!(
+                index["nodes"][0]["additionalAttributes"]["private-note"],
+                "keep: this document\n"
+            );
+            assert_eq!(index["nodes"][0]["metadata"]["version"], 1);
+            let repeat = invoke();
+            assert!(repeat.status.success(), "{repeat:?}");
+            unchanged(&dir, "nodes.json", &first);
+            unchanged(&dir, "model.yaml", model.as_bytes());
+        }
     }
 }
