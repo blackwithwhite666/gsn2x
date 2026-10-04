@@ -203,7 +203,7 @@ fn build_command_options() -> Command {
             Arg::new("INDEX_JSON")
                 .long("index-json")
                 .requires("CONTRACT")
-                .help("Write a derived JSON node index to this file (complete profile only)."),
+                .help("Write a v2 derived effective-node JSON index after a successful draft or complete profile check."),
         )
         .arg(
             Arg::new("INPUT")
